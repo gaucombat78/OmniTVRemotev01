@@ -2,10 +2,10 @@ name: Build & Package Free Universal Remote APK
 
 on:
   push:
-    branches: [ "main" ]
+    branches: [ "main", "master" ]
     tags: [ "v*" ]
   pull_request:
-    branches: [ "main" ]
+    branches: [ "main", "master" ]
   workflow_dispatch:
 
 concurrency:
@@ -28,11 +28,42 @@ jobs:
           distribution: 'temurin'
           cache: 'gradle'
 
-      - name: Grant Execute Permission for Gradle Wrapper
-        run: chmod +x gradlew || true
+      - name: Detect Project Structure & Auto-Fix Gradlew
+        run: |
+          echo "=== Listing Repository Root Files ==="
+          ls -la
+
+          # 1. Check if user committed files inside a subfolder (e.g. OmniRemote-Android-Source/)
+          if [ ! -f "settings.gradle.kts" ] && [ ! -f "settings.gradle" ]; then
+            echo "settings.gradle.kts not found at root. Checking subdirectories..."
+            SUBDIR=$(find . -maxdepth 3 -name "settings.gradle.kts" -o -name "settings.gradle" | head -n 1 | xargs -r dirname)
+            if [ -n "$SUBDIR" ] && [ "$SUBDIR" != "." ]; then
+              echo ">>> Detected project inside subfolder: $SUBDIR. Moving files to repository root..."
+              shopt -s dotglob
+              cp -r "$SUBDIR"/* . || true
+              shopt -u dotglob
+              ls -la
+            fi
+          fi
+
+          # 2. Check if Android project files are present
+          if [ ! -f "settings.gradle.kts" ] && [ ! -f "settings.gradle" ]; then
+            echo "::error::No Android project files found in this repository! Please upload the contents of OmniRemote-Android-Source.zip (including 'app' and 'settings.gradle.kts') to your repo."
+            exit 1
+          fi
+
+          # 3. If gradlew is missing, automatically generate it using pre-installed system Gradle
+          if [ ! -f "gradlew" ]; then
+            echo ">>> gradlew not found. Auto-generating Gradle wrapper using system gradle..."
+            gradle wrapper --gradle-version 8.4 || true
+          fi
+
+          # 4. Ensure gradlew is executable
+          chmod +x gradlew || true
 
       - name: Prepare Android Signing Keystore
         run: |
+          mkdir -p app/
           if [ -z "${{ secrets.KEYSTORE_BASE64 }}" ]; then
             echo "No custom keystore provided. Generating standalone release keystore..."
             keytool -genkeypair -v \
@@ -50,7 +81,12 @@ jobs:
           fi
 
       - name: Build Standalone APKs
-        run: ./gradlew assembleRelease assembleDebug --stacktrace
+        run: |
+          if [ -f "./gradlew" ]; then
+            ./gradlew assembleRelease assembleDebug --stacktrace
+          else
+            gradle assembleRelease assembleDebug --stacktrace
+          fi
         env:
           KEYSTORE_PATH: "debug.keystore"
           KEYSTORE_PASSWORD: "android"
